@@ -1,14 +1,24 @@
 {
   "name": "Cosmic Axe",
   "short_name": "CosmicAxe",
-  "description": "Retro space beat'em up with axe-throwing combat",
+  "description": "2.5D beat'em up space action game",
   "start_url": ".",
   "display": "fullscreen",
   "orientation": "landscape",
   "theme_color": "#040010",
   "background_color": "#040010",
   "icons": [
-    {"src": "icon-192.png", "sizes": "192x192", "type": "image/png"},
-    {"src": "icon-512.png", "sizes": "512x512", "type": "image/png"}
+    {
+      "src": "icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
   ]
 }

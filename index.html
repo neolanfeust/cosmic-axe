@@ -2,9 +2,8 @@
 <html lang="fr">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no,viewport-fit=cover">
 <title>COSMIC AXE v4</title>
-<!-- PWA -->
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#040010">
 <meta name="mobile-web-app-capable" content="yes">
@@ -14,21 +13,66 @@
 <link rel="apple-touch-icon" href="icon-192.png">
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-html,body{height:100%;height:100dvh}
-body{background:#000;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;min-height:100dvh;overflow:hidden}
-#c{display:block;image-rendering:pixelated}
+html,body{width:100%;height:100%;height:100dvh;background:#000;overflow:hidden}
+body{display:flex;flex-direction:column;align-items:center;justify-content:center}
+#c{display:block;image-rendering:pixelated;touch-action:none}
 #ui{color:#3b1a6b;font:9px monospace;text-align:center;margin-top:5px;letter-spacing:.8px}
-/* touch controls */
-#toverlay{position:fixed;inset:0;pointer-events:none;z-index:100;}
-.tbtn{position:absolute;border-radius:50%;font-family:monospace;color:#fff;touch-action:none;user-select:none;pointer-events:auto;cursor:pointer;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);border:1.5px solid rgba(255,255,255,0.22);background:rgba(15,18,40,0.42);transition:background 0.08s,border-color 0.08s;}
-.tbtn.active{background:rgba(100,140,255,0.55)!important;border-color:rgba(255,255,255,0.7)!important;}
-#jbase{position:absolute;bottom:24px;left:20px;width:110px;height:110px;border-radius:50%;background:rgba(255,255,255,0.06);border:1.5px solid rgba(255,255,255,0.18);pointer-events:auto;touch-action:none;user-select:none;}
-#jknob{position:absolute;top:50%;left:50%;width:40px;height:40px;border-radius:50%;background:rgba(140,170,255,0.32);border:1.5px solid rgba(180,210,255,0.5);transform:translate(-50%,-50%);pointer-events:none;}
+/* ── Touch controls ── */
+#touch-controls{display:none;position:fixed;inset:0;pointer-events:none;z-index:100}
+.tc-zone{pointer-events:all;position:absolute}
+/* Joystick */
+#joy-zone{bottom:12px;left:12px;width:130px;height:130px}
+#joy-base{position:absolute;inset:0;border-radius:50%;background:rgba(255,255,255,.08);border:2px solid rgba(0,210,255,.3);backdrop-filter:blur(4px)}
+#joy-knob{position:absolute;width:48px;height:48px;border-radius:50%;background:rgba(0,210,255,.35);border:2px solid rgba(0,210,255,.7);top:50%;left:50%;transform:translate(-50%,-50%);transition:transform .05s}
+/* Action buttons */
+#btn-zone{bottom:12px;right:12px;width:170px;height:130px}
+.btn{position:absolute;border-radius:50%;border:2px solid;display:flex;align-items:center;justify-content:center;font:bold 11px monospace;color:#fff;backdrop-filter:blur(4px);user-select:none;-webkit-user-select:none;touch-action:none;transition:filter .08s}
+.btn:active,.btn.pressed{filter:brightness(1.8)}
+#btn-jump{width:58px;height:58px;right:0;bottom:0;background:rgba(0,210,255,.25);border-color:rgba(0,210,255,.8)}
+#btn-attack{width:44px;height:44px;right:66px;bottom:10px;background:rgba(168,85,247,.25);border-color:rgba(168,85,247,.8)}
+#btn-heavy{width:38px;height:38px;right:2px;bottom:66px;background:rgba(251,191,36,.25);border-color:rgba(251,191,36,.8)}
+#btn-power{width:38px;height:38px;right:66px;bottom:66px;background:rgba(239,68,68,.25);border-color:rgba(239,68,68,.8)}
 </style>
 </head>
 <body>
 <canvas id="c"></canvas>
 <div id="ui">ZQSD/Flèches: Déplacer (Haut/Bas = profondeur) · Z/Entrée: Attaque · X: Lourd · C: Pouvoir · Espace: Saut · R: Restart</div>
+
+<!-- Touch controls (only shown on touch devices) -->
+<div id="touch-controls">
+  <div id="joy-zone" class="tc-zone">
+    <div id="joy-base"></div>
+    <div id="joy-knob"></div>
+  </div>
+  <div id="btn-zone" class="tc-zone">
+    <div id="btn-jump"  class="btn">JUMP</div>
+    <div id="btn-attack" class="btn">ATK</div>
+    <div id="btn-heavy"  class="btn">HVY</div>
+    <div id="btn-power"  class="btn">PWR</div>
+  </div>
+</div>
+
+<script>
+// ── Service Worker registration ────────────────────────
+if('serviceWorker' in navigator){
+  // Unregister stale SWs then register fresh one
+  navigator.serviceWorker.getRegistrations().then(regs=>{
+    const stale=regs.filter(r=>!r.active||!r.active.scriptURL.includes('sw.js'));
+    Promise.all(stale.map(r=>r.unregister())).then(()=>{
+      navigator.serviceWorker.register('sw.js?v=1').then(reg=>{
+        reg.addEventListener('updatefound',()=>{
+          const nw=reg.installing;
+          nw.addEventListener('statechange',()=>{
+            if(nw.state==='installed'&&navigator.serviceWorker.controller)location.reload();
+          });
+        });
+      });
+    });
+  });
+  navigator.serviceWorker.addEventListener('controllerchange',()=>location.reload());
+}
+</script>
+
 <script>
 // ═══════════════════════════════════════════════════════
 //  COSMIC AXE v4  —  2.5D Beat'em Up avec axe de profondeur
@@ -36,17 +80,21 @@ body{background:#000;display:flex;flex-direction:column;align-items:center;justi
 const CV=document.getElementById('c'),CX=CV.getContext('2d');
 const BW=480,BH=270;
 let SC=1;
-const isTouch='ontouchstart' in window||navigator.maxTouchPoints>0;
+const TOUCH=('ontouchstart' in window)||navigator.maxTouchPoints>0;
+function availH(){
+  if(window.visualViewport)return window.visualViewport.height;
+  return window.innerHeight;
+}
 function resize(){
-  const vw=visualViewport?visualViewport.width:innerWidth;
-  const vh=visualViewport?visualViewport.height:innerHeight;
-  if(isTouch){SC=Math.min(vw/BW,vh/BH);CV.width=Math.round(BW*SC);CV.height=Math.round(BH*SC);}
-  else{SC=Math.max(1,Math.min(Math.floor(vw/BW),Math.floor((vh-36)/BH),3));CV.width=BW*SC;CV.height=BH*SC;}
-  CX.imageSmoothingEnabled=false;
+  const avw=window.innerWidth,avh=availH();
+  const uiH=TOUCH?0:36;
+  SC=Math.max(1,Math.min(Math.floor(avw/BW),Math.floor((avh-uiH)/BH),3));
+  CV.width=BW*SC;CV.height=BH*SC;CX.imageSmoothingEnabled=false;
+  if(TOUCH){document.getElementById('ui').style.display='none';}
 }
 resize();
 window.addEventListener('resize',resize);
-if(visualViewport)visualViewport.addEventListener('resize',resize);
+if(window.visualViewport)window.visualViewport.addEventListener('resize',resize);
 
 // ── Champ de jeu (profondeur) ──────────────────────────
 const FN=BH-38;   // bord avant (near) — personnages au 1er plan
@@ -1233,107 +1281,85 @@ function loop(ts){
 requestAnimationFrame(ts=>{lt=ts;requestAnimationFrame(loop);});
 
 // ══════════════════════════════════════════════════════
-//  TOUCH CONTROLS (only on touch devices)
+//  TOUCH CONTROLS
 // ══════════════════════════════════════════════════════
-if(isTouch){
-  // Hide keyboard hint
-  const uiEl=document.getElementById('ui');
-  if(uiEl)uiEl.style.display='none';
+if(TOUCH){
+  document.getElementById('touch-controls').style.display='block';
 
-  // Overlay container
-  const ov=document.createElement('div');
-  ov.id='toverlay';
-  document.body.appendChild(ov);
-
-  // ── Virtual joystick ──────────────────────────────────
-  const jBase=document.createElement('div');jBase.id='jbase';
-  const jKnob=document.createElement('div');jKnob.id='jknob';
-  jBase.appendChild(jKnob);ov.appendChild(jBase);
-
-  let jPid=null;
-  const JMAX=36,JDEAD=10;
-
-  function jUpdate(cx2,cy2){
-    const r=jBase.getBoundingClientRect();
-    const dx=cx2-(r.left+r.width/2),dy=cy2-(r.top+r.height/2);
-    const ang=Math.atan2(dy,dx),dist=Math.min(Math.sqrt(dx*dx+dy*dy),JMAX);
-    jKnob.style.transform=`translate(calc(-50% + ${Math.cos(ang)*dist}px),calc(-50% + ${Math.sin(ang)*dist}px))`;
-    K['L']=dx<-JDEAD;K['R']=dx>JDEAD;K['U']=dy<-JDEAD;K['D']=dy>JDEAD;
+  // ── Mobile fullscreen ────────────────────────────────
+  let fsRequested=false;
+  function requestFS(){
+    if(fsRequested)return;fsRequested=true;
+    const el=document.documentElement;
+    const fn=el.requestFullscreen||el.webkitRequestFullscreen||el.mozRequestFullScreen;
+    if(fn)fn.call(el,{navigationUI:'hide'}).catch(()=>{});
+    if(screen.orientation&&screen.orientation.lock)screen.orientation.lock('landscape').catch(()=>{});
   }
-  function jReset(){
-    K['L']=K['R']=K['U']=K['D']=false;
-    jKnob.style.transform='translate(-50%,-50%)';
+  document.addEventListener('touchstart',requestFS,{once:true,passive:true});
+
+  // ── Virtual joystick ─────────────────────────────────
+  const joyZone=document.getElementById('joy-zone');
+  const joyKnob=document.getElementById('joy-knob');
+  const JOY_R=45; // max knob travel radius
+  let joyTouchId=null,joyOrigin={x:0,y:0};
+
+  function joyMove(cx,cy){
+    const rect=joyZone.getBoundingClientRect();
+    const ox=rect.left+rect.width/2,oy=rect.top+rect.height/2;
+    let dx=cx-ox,dy=cy-oy;
+    const dist=Math.hypot(dx,dy);
+    if(dist>JOY_R){dx=dx/dist*JOY_R;dy=dy/dist*JOY_R;}
+    joyKnob.style.transform=`translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px))`;
+    // Map to K
+    const nx=dx/JOY_R,ny=dy/JOY_R;
+    K.L=nx<-.25;K.R=nx>.25;
+    K.U=ny<-.35; // up = jump on joystick
+    K.D=ny>.35;
   }
-  jBase.addEventListener('pointerdown',e=>{
-    if(jPid!==null)return;
-    e.preventDefault();jPid=e.pointerId;
-    jBase.setPointerCapture(e.pointerId);jUpdate(e.clientX,e.clientY);
+  function joyRelease(){
+    joyTouchId=null;
+    joyKnob.style.transform='translate(-50%,-50%)';
+    K.L=false;K.R=false;K.U=false;K.D=false;
+  }
+
+  joyZone.addEventListener('touchstart',e=>{
+    e.preventDefault();
+    const t=e.changedTouches[0];
+    joyTouchId=t.identifier;
+    joyMove(t.clientX,t.clientY);
   },{passive:false});
-  jBase.addEventListener('pointermove',e=>{
-    if(e.pointerId!==jPid)return;
-    e.preventDefault();jUpdate(e.clientX,e.clientY);
+
+  document.addEventListener('touchmove',e=>{
+    for(const t of e.changedTouches){
+      if(t.identifier===joyTouchId){joyMove(t.clientX,t.clientY);break;}
+    }
   },{passive:false});
-  jBase.addEventListener('pointerup',e=>{if(e.pointerId!==jPid)return;jPid=null;jReset();});
-  jBase.addEventListener('pointercancel',e=>{if(e.pointerId!==jPid)return;jPid=null;jReset();});
+
+  document.addEventListener('touchend',e=>{
+    for(const t of e.changedTouches){
+      if(t.identifier===joyTouchId){joyRelease();break;}
+    }
+  },{passive:false});
+
+  document.addEventListener('touchcancel',e=>{
+    for(const t of e.changedTouches){
+      if(t.identifier===joyTouchId){joyRelease();break;}
+    }
+  },{passive:false});
 
   // ── Action buttons ────────────────────────────────────
-  function mkBtn(label,kKey,extraCss){
-    const b=document.createElement('button');
-    b.className='tbtn';b.textContent=label;
-    b.style.cssText=extraCss;
-    b.addEventListener('pointerdown',e=>{e.preventDefault();b.setPointerCapture(e.pointerId);K[kKey]=true;b.classList.add('active');},{passive:false});
-    const up=e=>{K[kKey]=false;b.classList.remove('active');};
-    b.addEventListener('pointerup',up);b.addEventListener('pointercancel',up);
-    ov.appendChild(b);return b;
+  function makeBtn(id,key){
+    const el=document.getElementById(id);
+    function press(e){e.preventDefault();K[key]=true;el.classList.add('pressed');}
+    function release(e){e.preventDefault();K[key]=false;el.classList.remove('pressed');}
+    el.addEventListener('touchstart',press,{passive:false});
+    el.addEventListener('touchend',release,{passive:false});
+    el.addEventListener('touchcancel',release,{passive:false});
   }
-
-  // Jump △ — primary, bottom-right, biggest
-  mkBtn('△','J','bottom:28px;right:24px;width:56px;height:56px;font-size:20px;background:rgba(30,120,200,0.20);border-color:rgba(80,180,255,0.45);');
-  // Attack ⚔ — above-left of jump
-  mkBtn('⚔','A','bottom:86px;right:86px;width:46px;height:46px;font-size:16px;background:rgba(80,200,80,0.12);border-color:rgba(60,230,120,0.30);');
-  // Heavy ★ — directly above jump
-  mkBtn('★','H','bottom:90px;right:28px;width:44px;height:44px;font-size:16px;background:rgba(255,180,0,0.12);border-color:rgba(255,200,0,0.30);');
-  // Power ◈ — top-left of cluster, smallest
-  mkBtn('◈','P','bottom:86px;right:142px;width:36px;height:36px;font-size:12px;background:rgba(160,60,255,0.12);border-color:rgba(180,80,255,0.30);');
-
-  // Prevent default touch scrolling on canvas
-  CV.addEventListener('touchstart',e=>e.preventDefault(),{passive:false});
-  CV.addEventListener('touchmove',e=>e.preventDefault(),{passive:false});
-
-  // ── Fullscreen on first tap ────────────────────────────
-  const isPWA=window.matchMedia('(display-mode: fullscreen)').matches||!!window.navigator.standalone;
-  if(!isPWA&&document.documentElement.requestFullscreen){
-    document.addEventListener('pointerdown',function reqFs(){
-      document.documentElement.requestFullscreen({navigationUI:'hide'}).then(resize).catch(()=>{});
-      document.removeEventListener('pointerdown',reqFs);
-    },{once:true});
-  }
-}
-
-// ══════════════════════════════════════════════════════
-//  SERVICE WORKER (PWA)
-// ══════════════════════════════════════════════════════
-if('serviceWorker' in navigator){
-  let _swRefreshing=false;
-  navigator.serviceWorker.addEventListener('controllerchange',()=>{
-    if(!_swRefreshing){_swRefreshing=true;window.location.reload();}
-  });
-  window.addEventListener('load',()=>{
-    navigator.serviceWorker.getRegistrations()
-      .then(regs=>Promise.all(regs.map(r=>r.unregister())))
-      .then(()=>navigator.serviceWorker.register('sw.js?v=1'))
-      .then(reg=>{
-        reg.update();
-        if(reg.waiting)reg.waiting.postMessage('SKIP_WAITING');
-        reg.addEventListener('updatefound',()=>{
-          const nw=reg.installing;
-          if(!nw)return;
-          nw.addEventListener('statechange',()=>{
-            if(nw.state==='installed'&&navigator.serviceWorker.controller)nw.postMessage('SKIP_WAITING');
-          });
-        });
-      }).catch(()=>{});
-  });
+  makeBtn('btn-jump','J');
+  makeBtn('btn-attack','A');
+  makeBtn('btn-heavy','H');
+  makeBtn('btn-power','P');
 }
 </script>
 </body>
