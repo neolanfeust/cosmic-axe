@@ -1313,13 +1313,13 @@ if(TOUCH){
     // Map to K
     const nx=dx/JOY_R,ny=dy/JOY_R;
     K.L=nx<-.25;K.R=nx>.25;
-    K.U=ny<-.35; // up = jump on joystick
+    K.J=ny<-.35; // up = jump (space)
     K.D=ny>.35;
   }
   function joyRelease(){
     joyTouchId=null;
     joyKnob.style.transform='translate(-50%,-50%)';
-    K.L=false;K.R=false;K.U=false;K.D=false;
+    K.L=false;K.R=false;K.J=false;K.D=false;
   }
 
   joyZone.addEventListener('touchstart',e=>{
