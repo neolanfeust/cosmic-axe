@@ -1,0 +1,1433 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>COSMIC AXE — Prototype v0.1</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #0a0015; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; font-family: 'Courier New', monospace; overflow: hidden; }
+#gameCanvas { display: block; image-rendering: pixelated; border: 2px solid #7c3aed; box-shadow: 0 0 40px #7c3aed88, 0 0 80px #00d2ff22; }
+#ui { color: #a855f7; font-size: 11px; text-align: center; margin-top: 8px; letter-spacing: 1px; opacity: 0.7; }
+</style>
+</head>
+<body>
+<canvas id="gameCanvas"></canvas>
+<div id="ui">ZQSD/WASD: Déplacement | Z/J: Attaque | X/K: Lourd | C/L: Magie | Espace: Saut | R: Restart — Appuie sur Z ou Espace pour démarrer</div>
+
+<script>
+// ═══════════════════════════════════════════════════
+//  COSMIC AXE — Prototype HTML5 Canvas v0.1
+//  Beat'em Up arcade sci-fantasy
+// ═══════════════════════════════════════════════════
+
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+
+// Responsive canvas
+const BASE_W = 480, BASE_H = 270;
+let scale = 1;
+function resize() {
+  const mw = Math.floor(window.innerWidth / BASE_W);
+  const mh = Math.floor((window.innerHeight - 60) / BASE_H);
+  scale = Math.max(1, Math.min(mw, mh, 3));
+  canvas.width = BASE_W * scale;
+  canvas.height = BASE_H * scale;
+  ctx.imageSmoothingEnabled = false;
+}
+resize();
+window.addEventListener('resize', resize);
+
+// ─── Constants ───────────────────────────────────────────────────────────────
+const FLOOR_Y = BASE_H - 48;
+const FLOOR_TOP = FLOOR_Y - 32;
+const FLOOR_BOT = FLOOR_Y + 8;
+const GRAVITY = 600;
+const COLORS = {
+  bg1: '#0a0015', bg2: '#12002a', bg3: '#1a0040',
+  floor: '#2a0060', floorEdge: '#4c1d95', floorShine: '#7c3aed',
+  player: '#a855f7', playerDark: '#6b21a8', playerLight: '#c084fc',
+  playerAxe: '#00d2ff', playerAxe2: '#7dd3fc',
+  hit: '#ffffff',
+  enemy1: '#e11d48', enemy1Dark: '#9f1239',
+  enemy2: '#f97316', enemy2Dark: '#c2410c',
+  shaman: '#06b6d4', shamanDark: '#0e7490',
+  boss: '#dc2626', bossDark: '#7f1d1d', bossAccent: '#fbbf24',
+  star: '#f7b731', starGlow: '#fef08a',
+  plasma: '#00d2ff', plasmaDark: '#0369a1',
+  void: '#1e1b4b', voidLight: '#312e81',
+  hp: '#22c55e', hpBg: '#14532d',
+  magic: '#f7b731', magicBg: '#422006',
+  combo: '#f0abfc',
+  text: '#e8d5ff',
+  white: '#ffffff',
+};
+
+// ─── Utility ─────────────────────────────────────────────────────────────────
+const rnd = (a, b) => a + Math.random() * (b - a);
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+const lerp = (a, b, t) => a + (b - a) * t;
+function rect(x, y, w, h, c) { ctx.fillStyle = c; ctx.fillRect(Math.round(x), Math.round(y), w, h); }
+function drawText(text, x, y, size, color, align = 'left', bold = false) {
+  ctx.font = `${bold ? 'bold ' : ''}${size}px 'Courier New'`;
+  ctx.fillStyle = color;
+  ctx.textAlign = align;
+  ctx.fillText(text, x, y);
+}
+
+// ─── Particle system ─────────────────────────────────────────────────────────
+class Particle {
+  constructor(x, y, vx, vy, color, life, size) {
+    this.x = x; this.y = y; this.vx = vx; this.vy = vy;
+    this.color = color; this.life = life; this.maxLife = life;
+    this.size = size || 2;
+  }
+  update(dt) {
+    this.x += this.vx * dt;
+    this.y += this.vy * dt;
+    this.vy += 200 * dt;
+    this.life -= dt;
+  }
+  draw() {
+    const a = this.life / this.maxLife;
+    ctx.globalAlpha = a;
+    rect(this.x - this.size/2, this.y - this.size/2, this.size, this.size, this.color);
+    ctx.globalAlpha = 1;
+  }
+}
+const particles = [];
+function spawnParticles(x, y, color, count, speed, gravity) {
+  for (let i = 0; i < count; i++) {
+    const ang = rnd(0, Math.PI * 2);
+    const spd = rnd(speed * 0.5, speed);
+    particles.push(new Particle(x, y, Math.cos(ang)*spd, Math.sin(ang)*spd - rnd(0,50),
+      color, rnd(0.3, 0.7), rnd(2, 5)));
+  }
+}
+
+// ─── Screen shake ────────────────────────────────────────────────────────────
+let shakeTimer = 0, shakeMag = 0;
+function shake(mag, dur) { if (mag > shakeMag) { shakeMag = mag; shakeTimer = dur; } }
+
+// ─── Floating texts ──────────────────────────────────────────────────────────
+const floatTexts = [];
+function spawnText(x, y, text, color, size) {
+  floatTexts.push({ x, y, text, color, size: size||6, life: 0.8, vy: -30 });
+}
+
+// ─── Input ───────────────────────────────────────────────────────────────────
+const keys = {};
+// Movement by physical key code (works for WASD and ZQSD)
+const keyMapCode = {
+  'ArrowLeft':'left','ArrowRight':'right','ArrowUp':'up','ArrowDown':'down',
+  'KeyA':'left','KeyD':'right','KeyW':'up','KeyS':'down','KeyQ':'left',
+  'Space':'jump',
+};
+// Action keys by character (works regardless of AZERTY/QWERTY layout)
+const keyMapChar = {
+  'z':'attack','j':'attack','enter':'attack',
+  'x':'heavy','k':'heavy',
+  'c':'magic','l':'magic',
+  'r':'restart',
+};
+window.addEventListener('keydown', e => {
+  const byCode = keyMapCode[e.code];
+  const byChar = keyMapChar[e.key.toLowerCase()];
+  if (byCode) { keys[byCode] = true; e.preventDefault(); }
+  if (byChar) { keys[byChar] = true; e.preventDefault(); }
+});
+window.addEventListener('keyup', e => {
+  const byCode = keyMapCode[e.code];
+  const byChar = keyMapChar[e.key.toLowerCase()];
+  if (byCode) { keys[byCode] = false; }
+  if (byChar) { keys[byChar] = false; }
+});
+
+// Touch controls
+let touchJoy = null, touchButtons = {};
+function setupTouch() {
+  canvas.addEventListener('touchstart', e => {
+    e.preventDefault();
+    for (const t of e.changedTouches) {
+      const cx = t.clientX / scale, cy = t.clientY / scale;
+      if (cx < BASE_W / 2) { touchJoy = { id: t.identifier, sx: cx, sy: cy, dx: 0, dy: 0 }; }
+      else {
+        if (cy < BASE_H * 0.5) { touchButtons.magic = true; }
+        else if (cy < BASE_H * 0.7) { touchButtons.heavy = true; touchButtons.heavyId = t.identifier; }
+        else { touchButtons.attack = true; touchButtons.attackId = t.identifier; }
+      }
+    }
+  }, { passive: false });
+  canvas.addEventListener('touchmove', e => {
+    e.preventDefault();
+    for (const t of e.changedTouches) {
+      if (touchJoy && t.identifier === touchJoy.id) {
+        touchJoy.dx = (t.clientX / scale - touchJoy.sx) / 30;
+        touchJoy.dy = (t.clientY / scale - touchJoy.sy) / 30;
+      }
+    }
+  }, { passive: false });
+  canvas.addEventListener('touchend', e => {
+    e.preventDefault();
+    for (const t of e.changedTouches) {
+      if (touchJoy && t.identifier === touchJoy.id) { touchJoy = null; keys.left = keys.right = keys.up = keys.down = false; }
+      if (t.identifier === touchButtons.attackId) touchButtons.attack = false;
+      if (t.identifier === touchButtons.heavyId) touchButtons.heavy = false;
+    }
+  }, { passive: false });
+}
+setupTouch();
+
+function getInput() {
+  let lx = 0, ly = 0;
+  if (keys.left || (touchJoy && touchJoy.dx < -0.2)) lx = -1;
+  if (keys.right || (touchJoy && touchJoy.dx > 0.2)) lx = 1;
+  if (keys.up || (touchJoy && touchJoy.dy < -0.2)) ly = -1;
+  if (keys.down || (touchJoy && touchJoy.dy > 0.2)) ly = 1;
+  return {
+    lx, ly,
+    attack: keys.attack || touchButtons.attack,
+    heavy: keys.heavy || touchButtons.heavy,
+    magic: keys.magic || touchButtons.magic,
+    jump: keys.jump,
+    restart: keys.restart,
+  };
+}
+
+// ─── Starfield background ────────────────────────────────────────────────────
+const stars = Array.from({length: 120}, () => ({
+  x: rnd(0, BASE_W), y: rnd(0, BASE_H * 0.65),
+  size: rnd(0.5, 2.5), speed: rnd(0.1, 0.5),
+  color: [COLORS.star, COLORS.plasma, '#ffffff', '#a78bfa'][Math.floor(rnd(0,4))],
+  twinkle: rnd(0, Math.PI * 2),
+}));
+
+function drawBackground(camX) {
+  // Deep space
+  const g = ctx.createLinearGradient(0, 0, 0, BASE_H * scale);
+  g.addColorStop(0, '#050010');
+  g.addColorStop(0.6, '#0a0025');
+  g.addColorStop(1, '#150040');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  ctx.save();
+  ctx.scale(scale, scale);
+
+  // Nebula blobs
+  ctx.globalAlpha = 0.08;
+  ctx.fillStyle = '#7c3aed';
+  ctx.beginPath(); ctx.ellipse(80 - camX*0.05, 60, 120, 60, 0.3, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle = '#0369a1';
+  ctx.beginPath(); ctx.ellipse(300 - camX*0.07, 40, 90, 40, -0.2, 0, Math.PI*2); ctx.fill();
+  ctx.globalAlpha = 1;
+
+  // Stars (parallax)
+  for (const s of stars) {
+    const tw = Math.sin(Date.now()/800 + s.twinkle) * 0.4 + 0.7;
+    ctx.globalAlpha = tw;
+    ctx.fillStyle = s.color;
+    const sx = ((s.x - camX * s.speed) % BASE_W + BASE_W) % BASE_W;
+    ctx.fillRect(Math.round(sx), Math.round(s.y), Math.ceil(s.size), Math.ceil(s.size));
+  }
+  ctx.globalAlpha = 1;
+
+  // Distant pillars (parallax)
+  ctx.globalAlpha = 0.25;
+  for (let i = 0; i < 8; i++) {
+    const px = ((i * 90 - camX * 0.15) % (BASE_W + 60) + BASE_W + 60) % (BASE_W + 60) - 30;
+    const ph = 50 + i * 8;
+    ctx.fillStyle = '#2a0060';
+    ctx.fillRect(Math.round(px), FLOOR_TOP - ph, 14, ph);
+    ctx.fillStyle = '#7c3aed';
+    ctx.fillRect(Math.round(px) + 4, FLOOR_TOP - ph, 6, 4);
+  }
+  ctx.globalAlpha = 1;
+
+  // Mid ruins
+  ctx.globalAlpha = 0.5;
+  for (let i = 0; i < 5; i++) {
+    const px = ((i * 160 + 40 - camX * 0.4) % (BASE_W + 200) + BASE_W + 200) % (BASE_W + 200) - 100;
+    ctx.fillStyle = '#1a0040';
+    ctx.fillRect(Math.round(px), FLOOR_TOP - 35, 30, 35);
+    ctx.fillStyle = '#4c1d95';
+    ctx.fillRect(Math.round(px) + 8, FLOOR_TOP - 35, 14, 4);
+    // glowing windows
+    ctx.fillStyle = '#7c3aed';
+    ctx.globalAlpha = 0.8;
+    ctx.fillRect(Math.round(px) + 4, FLOOR_TOP - 28, 6, 8);
+    ctx.fillRect(Math.round(px) + 20, FLOOR_TOP - 28, 6, 8);
+    ctx.globalAlpha = 0.5;
+  }
+  ctx.globalAlpha = 1;
+
+  // Floor
+  ctx.fillStyle = '#1e0050';
+  ctx.fillRect(0, FLOOR_TOP, BASE_W, BASE_H - FLOOR_TOP);
+  // Floor edge glow
+  ctx.fillStyle = '#7c3aed';
+  ctx.fillRect(0, FLOOR_TOP, BASE_W, 2);
+  // Floor tiles
+  ctx.globalAlpha = 0.15;
+  for (let i = 0; i < BASE_W / 24 + 2; i++) {
+    const tx = ((i * 24 - camX * 0.9) % BASE_W + BASE_W) % BASE_W;
+    ctx.fillStyle = '#a855f7';
+    ctx.fillRect(Math.round(tx), FLOOR_TOP, 1, BASE_H - FLOOR_TOP);
+  }
+  ctx.globalAlpha = 1;
+
+  ctx.restore();
+}
+
+// ─── Entity base ─────────────────────────────────────────────────────────────
+class Entity {
+  constructor(x, y) {
+    this.x = x; this.y = y;
+    this.vx = 0; this.vy = 0;
+    this.onGround = true;
+    this.facing = 1;
+    this.hp = 10; this.maxHp = 10;
+    this.alive = true;
+    this.hitFlash = 0;
+    this.iframes = 0;
+    this.w = 12; this.h = 20;
+    this.depth = y; // for z-sort
+  }
+  getDepth() { return this.y; }
+  applyGravity(dt) {
+    if (!this.onGround) {
+      this.vy += GRAVITY * dt;
+    }
+    this.y += this.vy * dt;
+    const floor = clamp(this.x, 0, 9999) > 0 ? FLOOR_TOP : FLOOR_TOP;
+    if (this.y >= floor) { this.y = floor; this.vy = 0; this.onGround = true; }
+  }
+  takeDamage(dmg, knockX, knockY, source) {
+    if (this.iframes > 0 || !this.alive) return false;
+    this.hp -= dmg;
+    this.hitFlash = 0.12;
+    this.iframes = 0.25;
+    if (knockX !== 0 || knockY !== 0) {
+      this.vx = knockX; this.vy = knockY;
+      this.onGround = false;
+    }
+    spawnParticles(this.x, this.y - this.h/2, COLORS.star, 5, 80, true);
+    if (this.hp <= 0) { this.alive = false; this.onDeath(); }
+    return true;
+  }
+  onDeath() {}
+  clampToField(minX, maxX) {
+    this.x = clamp(this.x, minX + this.w/2, maxX - this.w/2);
+    this.y = clamp(this.y, FLOOR_TOP - 24, FLOOR_TOP);
+  }
+}
+
+// ─── Player ───────────────────────────────────────────────────────────────────
+class Player extends Entity {
+  constructor(x, y) {
+    super(x, y);
+    this.hp = 100; this.maxHp = 100;
+    this.magic = 0; this.maxMagic = 3;
+    this.w = 14; this.h = 24;
+    this.speed = 90;
+    this.attackTimer = 0;
+    this.isAttacking = false;
+    this.isHeavy = false;
+    this.comboCount = 0;
+    this.comboTimer = 0;
+    this.comboDisplay = 0;
+    this.hitboxActive = false;
+    this.hitboxRect = null;
+    this.jumpVy = -280;
+    this.magicTimer = 0;
+    this.magicCooldown = 0;
+    this.hitEnemiesThisAttack = new Set();
+    this.deathTimer = 0;
+    this.anim = 'idle';
+    this.animFrame = 0;
+    this.animTimer = 0;
+    // Input edge detection
+    this._prevAttack = false;
+    this._prevHeavy = false;
+    this._prevMagic = false;
+    this._prevJump = false;
+  }
+
+  update(dt, input, enemies, game) {
+    if (!this.alive) { this.deathTimer += dt; return; }
+
+    const atk = input.attack && !this._prevAttack;
+    const hvy = input.heavy && !this._prevHeavy;
+    const mag = input.magic && !this._prevMagic;
+    const jmp = input.jump && !this._prevJump;
+    this._prevAttack = input.attack;
+    this._prevHeavy = input.heavy;
+    this._prevMagic = input.magic;
+    this._prevJump = input.jump;
+
+    this.iframes = Math.max(0, this.iframes - dt);
+    this.magicCooldown = Math.max(0, this.magicCooldown - dt);
+    this.hitFlash = Math.max(0, this.hitFlash - dt);
+
+    // Combo timer
+    if (this.comboTimer > 0) { this.comboTimer -= dt; if (this.comboTimer <= 0) { this.comboCount = 0; this.comboDisplay = 0; } }
+
+    // Magic
+    if (mag && this.magic > 0 && this.magicCooldown <= 0 && !this.isAttacking) {
+      this.activateMagic(enemies, game);
+    }
+
+    // Jump
+    if (jmp && this.onGround && !this.isAttacking) {
+      this.vy = this.jumpVy;
+      this.onGround = false;
+    }
+
+    // Attack
+    if (this.attackTimer > 0) {
+      this.attackTimer -= dt;
+      if (this.attackTimer <= 0) {
+        this.isAttacking = false;
+        this.isHeavy = false;
+        this.hitboxActive = false;
+        this.hitEnemiesThisAttack.clear();
+      }
+    }
+
+    if (!this.isAttacking) {
+      if (atk) { this.startAttack(false, enemies, game); }
+      else if (hvy) { this.startAttack(true, enemies, game); }
+    } else {
+      // Mid-attack hitbox window
+      const mid = this.isHeavy ? 0.18 : 0.1;
+      const full = this.isHeavy ? 0.45 : 0.28;
+      const elapsed = full - this.attackTimer;
+      if (elapsed >= mid && elapsed < mid + 0.12) {
+        this.hitboxActive = true;
+        this.doHit(enemies, game);
+      } else {
+        this.hitboxActive = false;
+      }
+    }
+
+    // Movement (slower if attacking)
+    if (!this.isAttacking || !this.onGround) {
+      const spd = this.isAttacking ? this.speed * 0.2 : this.speed;
+      const nx = input.lx * spd;
+      const ny = input.ly * spd * 0.55; // depth axis compressed
+      this.vx = nx;
+      if (this.onGround) this.y += ny * dt;
+      if (nx !== 0) this.facing = Math.sign(nx);
+    } else {
+      this.vx = 0;
+    }
+
+    this.x += this.vx * dt;
+    this.applyGravity(dt);
+    this.clampToField(game.camX - 10, game.camX + BASE_W + 10);
+    this.y = clamp(this.y, FLOOR_TOP - 30, FLOOR_TOP);
+
+    // Hitbox rect
+    const reach = this.isHeavy ? 28 : 22;
+    this.hitboxRect = {
+      x: this.x + (this.facing > 0 ? this.w/2 : -reach - this.w/2),
+      y: this.y - this.h, w: reach, h: this.h
+    };
+  }
+
+  startAttack(heavy, enemies, game) {
+    this.isAttacking = true;
+    this.isHeavy = heavy;
+    this.attackTimer = heavy ? 0.45 : 0.28;
+    this.hitEnemiesThisAttack.clear();
+    shake(heavy ? 2 : 1, 0.1);
+    spawnParticles(this.x + this.facing * 18, this.y - 12, COLORS.playerAxe, heavy ? 6 : 3, 60);
+  }
+
+  doHit(enemies, game) {
+    if (!this.hitboxActive) return;
+    const hb = this.hitboxRect;
+    for (const e of enemies) {
+      if (!e.alive || this.hitEnemiesThisAttack.has(e)) continue;
+      // AABB
+      if (e.x - e.w/2 < hb.x + hb.w && e.x + e.w/2 > hb.x &&
+          e.y - e.h < hb.y + hb.h && e.y > hb.y) {
+        const dmg = this.isHeavy ? 18 : 8 + this.comboCount * 2;
+        const kx = this.facing * (this.isHeavy ? 120 : 70);
+        const ky = -120;
+        if (e.takeDamage(dmg, kx, ky, this)) {
+          this.hitEnemiesThisAttack.add(e);
+          this.comboCount++;
+          this.comboTimer = 1.8;
+          this.comboDisplay = this.comboCount;
+          spawnText(e.x, e.y - e.h - 4, this.isHeavy ? dmg + '!!' : '' + dmg,
+            this.isHeavy ? COLORS.star : COLORS.white, this.isHeavy ? 8 : 6);
+          shake(this.isHeavy ? 3 : 1.5, 0.08);
+          // Hitstop
+          game.hitstop = this.isHeavy ? 0.07 : 0.04;
+        }
+      }
+    }
+  }
+
+  activateMagic(enemies, game) {
+    this.magic--;
+    this.magicCooldown = 1.5;
+    game.magicBoom = { x: this.x, y: this.y, r: 0, maxR: 90, timer: 0.6 };
+    spawnParticles(this.x, this.y - 12, COLORS.plasma, 30, 120);
+    spawnParticles(this.x, this.y - 12, COLORS.star, 20, 90);
+    shake(6, 0.4);
+    // Damage all enemies in radius
+    for (const e of enemies) {
+      if (!e.alive) continue;
+      const dx = e.x - this.x, dy = (e.y - e.h/2) - (this.y - 12);
+      if (Math.sqrt(dx*dx + dy*dy) < 90) {
+        e.takeDamage(50, dx * 1.5, -150, this);
+        spawnText(e.x, e.y - e.h - 4, '50★', COLORS.star, 8);
+      }
+    }
+    game.hitstop = 0.12;
+  }
+
+  draw(camX) {
+    const sx = Math.round(this.x - camX), sy = Math.round(this.y);
+    const flash = this.hitFlash > 0;
+    const f = this.facing;
+    const t = Date.now() / 1000;
+
+    if (!this.alive) {
+      ctx.globalAlpha = Math.max(0, 1 - this.deathTimer / 1.5);
+    }
+
+    // Shadow
+    ctx.globalAlpha *= 0.3;
+    ctx.fillStyle = '#000';
+    ctx.beginPath();
+    ctx.ellipse(sx, sy + 2, this.w * 0.8, 4, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalAlpha = this.alive ? 1 : Math.max(0, 1 - this.deathTimer / 1.5);
+
+    const c1 = flash ? COLORS.white : COLORS.player;
+    const c2 = flash ? COLORS.white : COLORS.playerDark;
+    const c3 = flash ? COLORS.white : COLORS.playerLight;
+    const cAxe = flash ? COLORS.white : COLORS.playerAxe;
+
+    // Legs (straddled when walking)
+    const legSwing = this.isAttacking ? 0 : Math.sin(t * 8) * 4;
+    rect(sx - 5 + legSwing * f, sy - 9, 5, 9, c2);
+    rect(sx, sy - 9, 5, 9, c2);
+    // Torso
+    rect(sx - 6, sy - 20, 12, 11, c1);
+    // Arms
+    if (this.isAttacking) {
+      const armExt = this.isHeavy ? 14 : 10;
+      rect(sx + (f > 0 ? 6 : -6 - armExt), sy - 20, armExt, 5, c3);
+      rect(sx - 6, sy - 20, 5, 7, c1);
+    } else {
+      rect(sx - 6, sy - 20, 5, 7, c1);
+      rect(sx + 7, sy - 20, 5, 7, c1);
+    }
+    // Head
+    rect(sx - 4, sy - 27, 8, 7, c3);
+    // Helmet glow
+    ctx.globalAlpha = 0.6;
+    rect(sx - 4, sy - 27, 8, 2, COLORS.plasma);
+    ctx.globalAlpha = 1;
+
+    // Axe (plasma weapon)
+    if (this.isAttacking) {
+      const ax = sx + (f > 0 ? 14 : -22), ay = sy - 22;
+      // Handle
+      rect(ax + (f > 0 ? -4 : 4), ay + 4, 12, 3, '#8b5cf6');
+      // Blade glow
+      ctx.globalAlpha = 0.4;
+      ctx.fillStyle = cAxe;
+      ctx.beginPath();
+      ctx.ellipse(ax + (f > 0 ? 8 : -2), ay + 5, 14, 8, 0, 0, Math.PI*2);
+      ctx.fill();
+      ctx.globalAlpha = 1;
+      // Blade
+      rect(ax, ay, 8, 10, cAxe);
+      rect(ax + (f > 0 ? 6 : -4), ay - 3, 4, 5, COLORS.playerAxe2);
+    } else {
+      // Resting axe on back
+      const ax = sx + (f > 0 ? -10 : 2), ay = sy - 28;
+      rect(ax, ay, 3, 14, '#8b5cf6');
+      rect(ax - 2, ay, 7, 5, cAxe);
+    }
+
+    // Iframes flicker
+    if (this.iframes > 0 && Math.floor(this.iframes * 12) % 2 === 0) {
+      ctx.globalAlpha = 0.4;
+      rect(sx - 8, sy - 30, 16, 32, '#ffffff');
+      ctx.globalAlpha = 1;
+    }
+
+    ctx.globalAlpha = 1;
+
+    // Hitbox debug (dev, off by default)
+    // if (DEBUG && this.hitboxActive && this.hitboxRect) { ... }
+  }
+}
+
+// ─── Enemy base ───────────────────────────────────────────────────────────────
+class EnemyBase extends Entity {
+  constructor(x, y) {
+    super(x, y);
+    this.state = 'patrol'; // patrol / aggro / attack / stunned / dead
+    this.stateTimer = 0;
+    this.target = null;
+    this.aggroRange = 80;
+    this.attackRange = 20;
+    this.attackDmg = 8;
+    this.speed = 40;
+    this.knockX = 0;
+    this.scoreValue = 100;
+  }
+
+  update(dt, player, game) {
+    if (!this.alive) { this.stateTimer += dt; return; }
+    this.iframes = Math.max(0, this.iframes - dt);
+    this.hitFlash = Math.max(0, this.hitFlash - dt);
+    this.stateTimer -= dt;
+
+    this.x += this.vx * dt;
+    if (!this.onGround) this.applyGravity(dt);
+    else { this.vx *= 0.85; if (Math.abs(this.vx) < 1) this.vx = 0; }
+
+    this.y = clamp(this.y, FLOOR_TOP - 26, FLOOR_TOP);
+    this.x = clamp(this.x, game.camX - 20, game.camX + BASE_W + 20);
+
+    if (!player.alive) return;
+    const dx = player.x - this.x;
+    const dy = player.y - this.y;
+    const dist = Math.sqrt(dx*dx + dy*dy);
+
+    if (this.state === 'patrol') {
+      this.x += Math.sin(Date.now()/1000 + this.x) * 0.3;
+      if (dist < this.aggroRange) { this.state = 'aggro'; }
+    } else if (this.state === 'aggro') {
+      this.facing = dx > 0 ? 1 : -1;
+      this.x += Math.sign(dx) * this.speed * dt;
+      this.y += Math.sign(dy) * this.speed * 0.4 * dt;
+      if (dist < this.attackRange) {
+        this.state = 'attack';
+        this.stateTimer = 0.6;
+        this.doAttack(player, game);
+      }
+    } else if (this.state === 'attack') {
+      if (this.stateTimer <= 0) {
+        this.state = dist < this.aggroRange ? 'aggro' : 'patrol';
+      }
+    } else if (this.state === 'stunned') {
+      if (this.stateTimer <= 0) this.state = 'aggro';
+    }
+  }
+
+  doAttack(player, game) {
+    if (player.iframes > 0 || !player.alive) return;
+    player.takeDamage(this.attackDmg, 0, -50, this);
+    spawnText(player.x, player.y - 30, '-' + this.attackDmg, '#ef4444', 7);
+    shake(2, 0.1);
+  }
+
+  onDeath() {
+    spawnParticles(this.x, this.y - this.h/2, COLORS.star, 10, 100);
+    spawnParticles(this.x, this.y - this.h/2, this.deathColor || '#ef4444', 8, 80);
+  }
+
+  drawHpBar() {
+    const w = this.w + 4;
+    const x = this.x - w/2, y = this.y - this.h - 6;
+    rect(x, y, w, 3, '#333');
+    rect(x, y, w * (this.hp / this.maxHp), 3, '#22c55e');
+  }
+}
+
+// ─── Void Soldier ─────────────────────────────────────────────────────────────
+class VoidSoldier extends EnemyBase {
+  constructor(x, y) {
+    super(x, y);
+    this.hp = 30; this.maxHp = 30;
+    this.w = 12; this.h = 20;
+    this.speed = 45;
+    this.attackDmg = 6;
+    this.attackRange = 16;
+    this.aggroRange = 90;
+    this.scoreValue = 100;
+    this.deathColor = '#e11d48';
+  }
+  draw(camX) {
+    const sx = Math.round(this.x - camX), sy = Math.round(this.y);
+    const flash = this.hitFlash > 0;
+    const c1 = flash ? '#fff' : COLORS.enemy1;
+    const c2 = flash ? '#fff' : COLORS.enemy1Dark;
+    const dead = !this.alive;
+    if (dead) { ctx.globalAlpha = Math.max(0, 1 - this.stateTimer / 0.6); }
+    // Shadow
+    ctx.globalAlpha *= 0.25;
+    ctx.fillStyle = '#000';
+    ctx.beginPath(); ctx.ellipse(sx, sy+2, 8, 3, 0, 0, Math.PI*2); ctx.fill();
+    ctx.globalAlpha = dead ? Math.max(0, 1 - this.stateTimer / 0.6) : 1;
+    // Body
+    rect(sx - 5, sy - 18, 10, 18, c1);
+    rect(sx - 4, sy - 22, 8, 4, c2); // head
+    // Armor plates
+    ctx.globalAlpha *= 0.6;
+    rect(sx - 4, sy - 17, 8, 5, '#831843');
+    ctx.globalAlpha = dead ? Math.max(0, 1 - this.stateTimer / 0.6) : 1;
+    // Spear
+    rect(sx + (this.facing > 0 ? 5 : -8), sy - 22, 3, 20, '#6b7280');
+    rect(sx + (this.facing > 0 ? 5 : -8), sy - 24, 3, 4, c1);
+    this.drawHpBar();
+    ctx.globalAlpha = 1;
+  }
+}
+
+// ─── Astral Beast ─────────────────────────────────────────────────────────────
+class AstralBeast extends EnemyBase {
+  constructor(x, y) {
+    super(x, y);
+    this.hp = 20; this.maxHp = 20;
+    this.w = 14; this.h = 14;
+    this.speed = 70;
+    this.attackDmg = 8;
+    this.attackRange = 14;
+    this.aggroRange = 100;
+    this.scoreValue = 150;
+    this.deathColor = '#f97316';
+    this.legAnim = 0;
+  }
+  update(dt, player, game) {
+    super.update(dt, player, game);
+    this.legAnim += dt * 8;
+  }
+  draw(camX) {
+    const sx = Math.round(this.x - camX), sy = Math.round(this.y);
+    const flash = this.hitFlash > 0;
+    const c1 = flash ? '#fff' : COLORS.enemy2;
+    const dead = !this.alive;
+    if (dead) ctx.globalAlpha = Math.max(0, 1 - this.stateTimer/0.6);
+    // Quadruped beast
+    // Legs
+    for (let i = 0; i < 4; i++) {
+      const lx = sx - 6 + i * 4;
+      const lh = 6 + Math.sin(this.legAnim + i * 1.5) * 3;
+      rect(lx, sy - lh, 3, lh, flash ? '#fff' : COLORS.enemy2Dark);
+    }
+    // Body
+    rect(sx - 7, sy - 14, 14, 10, c1);
+    // Head
+    rect(sx + (this.facing > 0 ? 5 : -9), sy - 16, 8, 8, c1);
+    // Eye glow
+    ctx.globalAlpha = (dead ? Math.max(0, 1 - this.stateTimer/0.6) : 1) * 0.8;
+    ctx.fillStyle = '#fbbf24';
+    ctx.fillRect(sx + (this.facing > 0 ? 9 : -7), sy - 14, 2, 2);
+    ctx.globalAlpha = dead ? Math.max(0, 1 - this.stateTimer/0.6) : 1;
+    // Tail
+    const tailWag = Math.sin(Date.now()/300) * 3;
+    rect(sx - (this.facing > 0 ? 7 : -1), sy - 12 + tailWag, 4, 3, flash ? '#fff' : COLORS.enemy2Dark);
+    this.drawHpBar();
+    ctx.globalAlpha = 1;
+  }
+}
+
+// ─── Shaman ───────────────────────────────────────────────────────────────────
+class CelestialShaman extends EnemyBase {
+  constructor(x, y) {
+    super(x, y);
+    this.hp = 25; this.maxHp = 25;
+    this.w = 11; this.h = 22;
+    this.speed = 30;
+    this.attackDmg = 5;
+    this.attackRange = 85;
+    this.aggroRange = 110;
+    this.scoreValue = 200;
+    this.deathColor = '#06b6d4';
+    this.shootCooldown = 0;
+    this.projectiles = [];
+    this.hover = 0;
+  }
+  update(dt, player, game) {
+    this.hover = Math.sin(Date.now()/600) * 3;
+    this.shootCooldown = Math.max(0, this.shootCooldown - dt);
+    // Update projectiles
+    this.projectiles = this.projectiles.filter(p => p.life > 0);
+    for (const p of this.projectiles) {
+      p.x += p.vx * dt;
+      p.y += p.vy * dt;
+      p.life -= dt;
+      // Hit player
+      if (player.alive && player.iframes <= 0) {
+        const dx = p.x - player.x, dy = p.y - (player.y - 12);
+        if (Math.sqrt(dx*dx+dy*dy) < 8) {
+          player.takeDamage(5, p.vx * 0.3, -60, this);
+          spawnText(player.x, player.y - 30, '-5', '#06b6d4', 6);
+          p.life = 0;
+          shake(1.5, 0.08);
+        }
+      }
+    }
+    if (this.alive && player.alive && this.state !== 'stunned') {
+      const dx = player.x - this.x;
+      this.facing = dx > 0 ? 1 : -1;
+      const dist = Math.sqrt(dx*dx + (player.y-this.y)**2);
+      if (dist < this.aggroRange && this.shootCooldown <= 0) {
+        this.fireProjectile(player);
+        this.shootCooldown = 2.2;
+      }
+      // Keep distance
+      if (dist < 50) { this.vx = -Math.sign(dx) * 30; }
+    }
+    // Override base update slightly
+    this.iframes = Math.max(0, this.iframes - dt);
+    this.hitFlash = Math.max(0, this.hitFlash - dt);
+    this.stateTimer -= dt;
+    this.x += this.vx * dt;
+    this.vx *= 0.9;
+    this.y = clamp(this.y, FLOOR_TOP - 26, FLOOR_TOP);
+    this.x = clamp(this.x, game.camX - 20, game.camX + BASE_W + 20);
+    if (!this.alive) { this.stateTimer += dt; }
+  }
+  fireProjectile(player) {
+    const dx = player.x - this.x, dy = (player.y - 12) - (this.y - 11);
+    const len = Math.sqrt(dx*dx+dy*dy);
+    this.projectiles.push({ x: this.x + this.facing * 8, y: this.y - 11, vx: (dx/len)*90, vy: (dy/len)*90, life: 2 });
+    spawnParticles(this.x + this.facing * 8, this.y - 11, COLORS.plasma, 4, 40);
+  }
+  draw(camX) {
+    const sx = Math.round(this.x - camX), sy = Math.round(this.y + this.hover);
+    const flash = this.hitFlash > 0;
+    const c1 = flash ? '#fff' : COLORS.shaman;
+    const dead = !this.alive;
+    if (dead) ctx.globalAlpha = Math.max(0, 1 - this.stateTimer/0.7);
+    // Robe
+    rect(sx - 5, sy - 20, 10, 20, c1);
+    // Head
+    rect(sx - 4, sy - 26, 8, 6, flash ? '#fff' : COLORS.shamanDark);
+    // Hat / headdress
+    rect(sx - 3, sy - 30, 6, 4, c1);
+    rect(sx - 1, sy - 34, 2, 4, flash ? '#fff' : '#0e7490');
+    // Staff
+    const sx2 = sx + (this.facing > 0 ? 6 : -9);
+    rect(sx2, sy - 24, 3, 20, '#374151');
+    // Staff orb glow
+    ctx.globalAlpha = (dead ? Math.max(0, 1-this.stateTimer/0.7):1) * (0.5 + Math.sin(Date.now()/300)*0.3);
+    ctx.fillStyle = COLORS.plasma;
+    ctx.beginPath(); ctx.arc(sx2+1, sy-24, 5, 0, Math.PI*2); ctx.fill();
+    ctx.globalAlpha = dead ? Math.max(0, 1 - this.stateTimer/0.7) : 1;
+    // Draw projectiles
+    for (const p of this.projectiles) {
+      const px = Math.round(p.x - camX);
+      ctx.globalAlpha = Math.min(1, p.life * 3);
+      ctx.fillStyle = COLORS.plasma;
+      ctx.beginPath(); ctx.arc(px, Math.round(p.y), 4, 0, Math.PI*2); ctx.fill();
+      ctx.globalAlpha = 0.3;
+      ctx.fillStyle = '#7dd3fc';
+      ctx.beginPath(); ctx.arc(px, Math.round(p.y), 7, 0, Math.PI*2); ctx.fill();
+      ctx.globalAlpha = 1;
+    }
+    this.drawHpBar();
+    ctx.globalAlpha = 1;
+  }
+}
+
+// ─── Boss — The Celestial Warden ──────────────────────────────────────────────
+class CelestialWarden extends EnemyBase {
+  constructor(x, y) {
+    super(x, y);
+    this.hp = 200; this.maxHp = 200;
+    this.w = 28; this.h = 40;
+    this.speed = 35;
+    this.attackDmg = 12;
+    this.attackRange = 32;
+    this.aggroRange = 999;
+    this.scoreValue = 1000;
+    this.phase = 1;
+    this.deathColor = '#dc2626';
+    this.pattern = 'approach';
+    this.phaseTimer = 0;
+    this.enraged = false;
+    this.shockwaveActive = false;
+    this.shockwaveR = 0;
+  }
+  update(dt, player, game) {
+    if (!this.alive) { this.stateTimer += dt; return; }
+    this.iframes = Math.max(0, this.iframes - dt);
+    this.hitFlash = Math.max(0, this.hitFlash - dt);
+    this.phaseTimer = Math.max(0, this.phaseTimer - dt);
+
+    // Phase change
+    if (this.hp <= 100 && this.phase === 1) {
+      this.phase = 2;
+      this.enraged = true;
+      this.speed = 55;
+      shake(8, 0.5);
+      spawnParticles(this.x, this.y - 20, '#dc2626', 30, 150);
+      spawnText(this.x, this.y - 50, 'PHASE 2!', '#dc2626', 10);
+    }
+
+    // Shockwave
+    if (this.shockwaveActive) {
+      this.shockwaveR += 180 * dt;
+      if (this.shockwaveR > 120) { this.shockwaveActive = false; this.shockwaveR = 0; }
+      if (player.alive && player.iframes <= 0) {
+        const dx = player.x - this.x, dy = player.y - this.y;
+        const d = Math.sqrt(dx*dx+dy*dy);
+        if (Math.abs(d - this.shockwaveR) < 12) {
+          player.takeDamage(8, dx*2, -120, this);
+          spawnText(player.x, player.y-30, '-8', '#dc2626', 7);
+        }
+      }
+    }
+
+    if (!player.alive) return;
+    const dx = player.x - this.x;
+    const dy = player.y - this.y;
+    const dist = Math.sqrt(dx*dx+dy*dy);
+    this.facing = dx > 0 ? 1 : -1;
+
+    if (this.phaseTimer <= 0) {
+      if (dist < this.attackRange) {
+        // Melee strike
+        this.doAttack(player, game);
+        this.phaseTimer = this.enraged ? 0.7 : 1.1;
+        shake(4, 0.15);
+      } else if (this.phase === 2 && dist > 50) {
+        // Phase 2: dash
+        this.vx = this.facing * 200;
+        this.phaseTimer = 0.5;
+        spawnParticles(this.x, this.y - 20, '#fbbf24', 8, 80);
+      } else if (this.phase === 2 && Math.random() < 0.02) {
+        // Shockwave
+        this.shockwaveActive = true;
+        this.shockwaveR = 10;
+        this.phaseTimer = 1.8;
+      } else {
+        // Approach
+        this.x += Math.sign(dx) * this.speed * dt;
+        this.y += Math.sign(dy) * this.speed * 0.4 * dt;
+      }
+    } else if (Math.abs(this.vx) > 10) {
+      this.x += this.vx * dt;
+      this.vx *= 0.9;
+    }
+
+    this.y = clamp(this.y, FLOOR_TOP - 26, FLOOR_TOP);
+    this.x = clamp(this.x, game.camX + 20, game.camX + BASE_W - 20);
+  }
+  draw(camX) {
+    const sx = Math.round(this.x - camX), sy = Math.round(this.y);
+    const flash = this.hitFlash > 0;
+    const t = Date.now() / 1000;
+    const c1 = flash ? '#fff' : COLORS.boss;
+    const c2 = flash ? '#fff' : COLORS.bossDark;
+    const cAcc = flash ? '#fff' : COLORS.bossAccent;
+    const dead = !this.alive;
+    if (dead) ctx.globalAlpha = Math.max(0, 1 - this.stateTimer/1.5);
+
+    // Shadow
+    ctx.globalAlpha *= 0.3;
+    ctx.fillStyle = '#000';
+    ctx.beginPath(); ctx.ellipse(sx, sy+2, 18, 6, 0, 0, Math.PI*2); ctx.fill();
+    ctx.globalAlpha = dead ? Math.max(0, 1 - this.stateTimer/1.5) : 1;
+
+    // Legs
+    rect(sx - 10, sy - 16, 9, 16, c2);
+    rect(sx + 1, sy - 16, 9, 16, c2);
+    // Body
+    rect(sx - 13, sy - 36, 26, 20, c1);
+    // Chest armor
+    ctx.globalAlpha = 0.7;
+    rect(sx - 10, sy - 35, 20, 10, '#7f1d1d');
+    ctx.globalAlpha = dead ? Math.max(0, 1 - this.stateTimer/1.5) : 1;
+    // Arms
+    rect(sx - 18, sy - 36, 5, 18, c1);
+    rect(sx + 13, sy - 36, 5, 18, c1);
+    // Pauldrons
+    rect(sx - 20, sy - 40, 10, 6, c2);
+    rect(sx + 10, sy - 40, 10, 6, c2);
+    // Head
+    rect(sx - 10, sy - 46, 20, 10, c2);
+    // Crown/horns
+    rect(sx - 4, sy - 52, 4, 6, cAcc);
+    rect(sx + 4, sy - 52, 4, 6, cAcc);
+    rect(sx - 7, sy - 49, 3, 4, cAcc);
+    rect(sx + 8, sy - 49, 3, 4, cAcc);
+    // Eyes (glowing)
+    ctx.globalAlpha = 0.9 + Math.sin(t*4) * 0.1;
+    ctx.fillStyle = this.enraged ? '#fbbf24' : '#00d2ff';
+    ctx.fillRect(sx - 7, sy - 44, 4, 3);
+    ctx.fillRect(sx + 3, sy - 44, 4, 3);
+    ctx.globalAlpha = 1;
+
+    // Weapon — great axe
+    const wax = sx + (this.facing > 0 ? 14 : -22), way = sy - 40;
+    rect(wax, way, 4, 28, '#4b5563');
+    rect(wax - 4, way - 4, 12, 10, c1);
+    rect(wax - 2, way + 6, 8, 5, cAcc);
+
+    // Enraged aura
+    if (this.enraged) {
+      ctx.globalAlpha = 0.2 + Math.sin(t*6)*0.1;
+      ctx.fillStyle = '#dc2626';
+      ctx.beginPath(); ctx.arc(sx, sy-24, 30 + Math.sin(t*3)*4, 0, Math.PI*2); ctx.fill();
+      ctx.globalAlpha = 1;
+    }
+
+    // Shockwave ring
+    if (this.shockwaveActive) {
+      ctx.globalAlpha = 0.5 * (1 - this.shockwaveR/120);
+      ctx.strokeStyle = '#fbbf24';
+      ctx.lineWidth = 4;
+      ctx.beginPath();
+      ctx.arc(sx, sy - 20, this.shockwaveR, 0, Math.PI*2);
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+    }
+
+    // HP bar (larger, centered)
+    ctx.globalAlpha = 1;
+  }
+}
+
+// ─── Pickup ───────────────────────────────────────────────────────────────────
+class Pickup {
+  constructor(x, y, type) {
+    this.x = x; this.y = y; this.type = type; // 'magic' or 'hp'
+    this.alive = true;
+    this.bob = rnd(0, Math.PI*2);
+  }
+  update(dt, player) {
+    if (!this.alive) return;
+    const dx = player.x - this.x, dy = player.y - this.y;
+    if (Math.sqrt(dx*dx+dy*dy) < 14) {
+      this.alive = false;
+      if (this.type === 'magic' && player.magic < player.maxMagic) {
+        player.magic++;
+        spawnText(player.x, player.y - 32, '★ +MAGIE', COLORS.star, 7);
+        spawnParticles(this.x, this.y, COLORS.star, 8, 60);
+      } else if (this.type === 'hp') {
+        const heal = 20;
+        player.hp = Math.min(player.maxHp, player.hp + heal);
+        spawnText(player.x, player.y - 32, '+' + heal + ' HP', COLORS.hp, 7);
+        spawnParticles(this.x, this.y, '#22c55e', 8, 60);
+      }
+    }
+  }
+  draw(camX) {
+    if (!this.alive) return;
+    const sx = this.x - camX, sy = this.y + Math.sin(Date.now()/500 + this.bob) * 3;
+    if (this.type === 'magic') {
+      // Star crystal
+      ctx.globalAlpha = 0.3;
+      ctx.fillStyle = COLORS.star;
+      ctx.beginPath(); ctx.arc(sx, sy, 10, 0, Math.PI*2); ctx.fill();
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = COLORS.star;
+      ctx.beginPath();
+      for (let i = 0; i < 5; i++) {
+        const a = -Math.PI/2 + i * Math.PI*2/5, ra = a + Math.PI/5;
+        if (i===0) ctx.moveTo(sx+Math.cos(a)*8, sy+Math.sin(a)*8);
+        else ctx.lineTo(sx+Math.cos(a)*8, sy+Math.sin(a)*8);
+        ctx.lineTo(sx+Math.cos(ra)*4, sy+Math.sin(ra)*4);
+      }
+      ctx.closePath(); ctx.fill();
+    } else {
+      // HP orb
+      ctx.globalAlpha = 0.3;
+      ctx.fillStyle = COLORS.hp;
+      ctx.beginPath(); ctx.arc(sx, sy, 9, 0, Math.PI*2); ctx.fill();
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = '#4ade80';
+      rect(sx - 3, sy - 6, 6, 12, '#4ade80');
+      rect(sx - 6, sy - 3, 12, 6, '#4ade80');
+    }
+  }
+}
+
+// ─── Arena wave system ────────────────────────────────────────────────────────
+// Waves of enemies, boss unlocked after all waves cleared
+function createWaves(game) {
+  return [
+    // Wave 1 — 3 soldiers
+    { x: 300, enemies: [
+      { type: 'soldier', rx: 20, ry: 0 },
+      { type: 'soldier', rx: 40, ry: -8 },
+      { type: 'beast',   rx: 70, ry: 5 },
+    ]},
+    // Wave 2 — mixed
+    { x: 550, enemies: [
+      { type: 'soldier', rx: 10, ry: 0 },
+      { type: 'shaman',  rx: 60, ry: 0 },
+      { type: 'beast',   rx: 35, ry: -10 },
+      { type: 'beast',   rx: 80, ry: 8 },
+    ]},
+    // Wave 3 — harder
+    { x: 800, enemies: [
+      { type: 'soldier', rx: 0, ry: 0 },
+      { type: 'soldier', rx: 20, ry: -5 },
+      { type: 'shaman',  rx: 80, ry: 0 },
+      { type: 'shaman',  rx: 100, ry: 10 },
+      { type: 'beast',   rx: 50, ry: 8 },
+    ]},
+    // Boss wave
+    { x: 1050, enemies: [
+      { type: 'boss', rx: 40, ry: 0 },
+    ]},
+  ];
+}
+
+// ─── HUD ──────────────────────────────────────────────────────────────────────
+function drawHUD(game) {
+  const p = game.player;
+  // HP bar
+  rect(8, 8, 80, 8, COLORS.hpBg);
+  rect(8, 8, Math.round(80 * p.hp / p.maxHp), 8, COLORS.hp);
+  rect(8, 8, 80, 8, 'transparent');
+  drawText('HP', 8, 7, 5, COLORS.text);
+  // HP value
+  drawText(p.hp + '/' + p.maxHp, 92, 15, 5, COLORS.text);
+
+  // Magic stars
+  for (let i = 0; i < p.maxMagic; i++) {
+    const filled = i < p.magic;
+    ctx.globalAlpha = filled ? 1 : 0.3;
+    ctx.fillStyle = COLORS.star;
+    const sx = 8 + i * 14;
+    ctx.beginPath();
+    for (let j = 0; j < 5; j++) {
+      const a = -Math.PI/2 + j * Math.PI*2/5, ra = a + Math.PI/5;
+      if (j===0) ctx.moveTo(sx+Math.cos(a)*5, 22+Math.sin(a)*5);
+      else ctx.lineTo(sx+Math.cos(a)*5, 22+Math.sin(a)*5);
+      ctx.lineTo(sx+Math.cos(ra)*2.5, 22+Math.sin(ra)*2.5);
+    }
+    ctx.closePath(); ctx.fill();
+    ctx.globalAlpha = 1;
+  }
+
+  // Combo counter
+  if (p.comboDisplay >= 2) {
+    const label = p.comboDisplay + 'x COMBO';
+    const alpha = Math.min(1, p.comboTimer * 2);
+    ctx.globalAlpha = alpha;
+    drawText(label, BASE_W / 2, 20, 9, COLORS.combo, 'center', true);
+    ctx.globalAlpha = 1;
+  }
+
+  // Boss HP bar (if boss active)
+  if (game.boss && game.boss.alive) {
+    const bw = BASE_W - 40;
+    const bx = 20, by = BASE_H - 18;
+    rect(bx, by, bw, 10, '#1f1f1f');
+    const hpRatio = game.boss.hp / game.boss.maxHp;
+    const bColor = hpRatio > 0.5 ? '#dc2626' : '#fbbf24';
+    rect(bx, by, Math.round(bw * hpRatio), 10, bColor);
+    drawText('✦ GARDIEN CÉLESTE ✦', BASE_W/2, by - 3, 5, '#e8d5ff', 'center');
+    // Phase pips
+    for (let i = 0; i < 2; i++) {
+      const filled = (i + 1) > game.boss.phase - 1;
+      ctx.globalAlpha = filled ? 1 : 0.3;
+      rect(bx + bw + 4 + i * 6, by + 2, 4, 6, '#fbbf24');
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  // Score
+  drawText('★ ' + game.score, BASE_W - 8, 14, 6, COLORS.star, 'right');
+
+  // Wave indicator
+  if (game.waveText && game.waveTextTimer > 0) {
+    const a = Math.min(1, game.waveTextTimer * 2);
+    ctx.globalAlpha = a;
+    drawText(game.waveText, BASE_W/2, BASE_H * 0.35, 12, COLORS.text, 'center', true);
+    ctx.globalAlpha = 1;
+  }
+}
+
+// ─── Game over / Victory screens ─────────────────────────────────────────────
+function drawOverlay(game) {
+  if (game.state === 'gameover') {
+    ctx.globalAlpha = Math.min(0.85, game.overlayTimer * 2);
+    rect(0, 0, BASE_W, BASE_H, '#050010');
+    ctx.globalAlpha = 1;
+    drawText('GAME OVER', BASE_W/2, BASE_H/2 - 20, 18, '#ef4444', 'center', true);
+    drawText('Score: ' + game.score, BASE_W/2, BASE_H/2 + 5, 8, COLORS.text, 'center');
+    drawText('R — Recommencer', BASE_W/2, BASE_H/2 + 20, 6, '#a78bfa', 'center');
+  } else if (game.state === 'victory') {
+    ctx.globalAlpha = Math.min(0.85, game.overlayTimer * 2);
+    rect(0, 0, BASE_W, BASE_H, '#05001a');
+    ctx.globalAlpha = 1;
+    drawText('✦ VICTOIRE ✦', BASE_W/2, BASE_H/2 - 25, 16, COLORS.star, 'center', true);
+    drawText('COSMIC AXE', BASE_W/2, BASE_H/2 - 8, 10, COLORS.plasma, 'center', true);
+    drawText('Score final: ' + game.score, BASE_W/2, BASE_H/2 + 10, 8, COLORS.text, 'center');
+    drawText('R — Rejouer', BASE_W/2, BASE_H/2 + 24, 6, '#a78bfa', 'center');
+  }
+}
+
+// ─── Menu ─────────────────────────────────────────────────────────────────────
+function drawMenu(game) {
+  const t = Date.now()/1000;
+  // Stars
+  for (const s of stars) {
+    const tw = Math.sin(t*1.2 + s.twinkle) * 0.4 + 0.7;
+    ctx.globalAlpha = tw;
+    ctx.fillStyle = s.color;
+    ctx.fillRect(Math.round(s.x), Math.round(s.y), Math.ceil(s.size), Math.ceil(s.size));
+  }
+  ctx.globalAlpha = 1;
+
+  // Logo
+  const pulse = 1 + Math.sin(t*2)*0.03;
+  ctx.save();
+  ctx.translate(BASE_W/2, BASE_H/2 - 50);
+  ctx.scale(pulse, pulse);
+  drawText('✦', 0, -30, 28, COLORS.star, 'center', true);
+  drawText('COSMIC', 0, 0, 22, COLORS.plasma, 'center', true);
+  drawText('AXE', 0, 22, 22, '#a855f7', 'center', true);
+  ctx.restore();
+  drawText('Beat\'em Up Sci-Fantasy', BASE_W/2, BASE_H/2 - 5, 6, '#7c3aed', 'center');
+
+  // Blink start
+  if (Math.floor(t*2) % 2 === 0) {
+    drawText('Appuie sur Z pour commencer', BASE_W/2, BASE_H/2 + 20, 7, COLORS.text, 'center');
+  }
+  drawText('ZQSD/Flèches: Déplacer   Z: Attaquer   X: Lourd   C: Magie   Espace: Sauter', BASE_W/2, BASE_H - 22, 5, '#4c1d95', 'center');
+  drawText('prototype v0.1', BASE_W - 5, BASE_H - 8, 4, '#4c1d95', 'right');
+}
+
+// ─── Magic boom effect ────────────────────────────────────────────────────────
+function drawMagicBoom(game, camX) {
+  if (!game.magicBoom) return;
+  const mb = game.magicBoom;
+  mb.r += (mb.maxR - mb.r) * 0.3;
+  mb.timer -= 1/60;
+  if (mb.timer <= 0) { game.magicBoom = null; return; }
+  const alpha = mb.timer / 0.6;
+  const sx = mb.x - camX;
+  // Outer ring
+  ctx.globalAlpha = alpha * 0.3;
+  ctx.fillStyle = COLORS.plasma;
+  ctx.beginPath(); ctx.arc(sx, mb.y - 12, mb.r, 0, Math.PI*2); ctx.fill();
+  // Inner ring
+  ctx.globalAlpha = alpha * 0.5;
+  ctx.strokeStyle = COLORS.star;
+  ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.arc(sx, mb.y - 12, mb.r * 0.6, 0, Math.PI*2); ctx.stroke();
+  ctx.lineWidth = 1;
+  ctx.globalAlpha = 1;
+}
+
+// ─── Game state machine ───────────────────────────────────────────────────────
+class Game {
+  constructor() { this.init(); }
+  init() {
+    this.state = 'menu';
+    this.player = new Player(80, FLOOR_TOP);
+    this.enemies = [];
+    this.pickups = [];
+    this.boss = null;
+    this.score = 0;
+    this.camX = 0;
+    this.targetCamX = 0;
+    this.levelLength = 1300;
+    this.hitstop = 0;
+    this.overlayTimer = 0;
+    this.magicBoom = null;
+    this.waveText = '';
+    this.waveTextTimer = 0;
+    this.waveIndex = 0;
+    this.waves = createWaves(this);
+    this.waveClearTimer = 0;
+    this.arenaLocked = false;
+    this.arenaLockX = 0;
+    this.bossTriggered = false;
+  }
+
+  spawnEnemy(waveData) {
+    const { x, enemies } = waveData;
+    for (const e of enemies) {
+      const ex = x + e.rx, ey = FLOOR_TOP + e.ry;
+      let ent;
+      if (e.type === 'soldier') ent = new VoidSoldier(ex, ey);
+      else if (e.type === 'beast') ent = new AstralBeast(ex, ey);
+      else if (e.type === 'shaman') ent = new CelestialShaman(ex, ey);
+      else if (e.type === 'boss') {
+        ent = new CelestialWarden(ex, ey);
+        this.boss = ent;
+      }
+      if (ent) this.enemies.push(ent);
+    }
+    this.waveText = e => {
+      if (waveData.enemies.find(e => e.type === 'boss')) return '✦ BOSS : GARDIEN CÉLESTE ✦';
+      return '— Vague ' + (this.waveIndex) + ' —';
+    };
+    this.waveText = waveData.enemies.find(e => e.type === 'boss') ? '✦ BOSS : GARDIEN CÉLESTE ✦' : '— Vague ' + this.waveIndex + ' —';
+    this.waveTextTimer = 2;
+  }
+
+  update(dt) {
+    const input = getInput();
+
+    // Menu
+    if (this.state === 'menu') {
+      if (input.attack || input.jump) { this.state = 'playing'; this.spawnEnemy(this.waves[0]); this.waveIndex = 1; }
+      return;
+    }
+
+    // Restart
+    if (input.restart && (this.state === 'gameover' || this.state === 'victory')) {
+      this.init();
+      return;
+    }
+
+    if (this.state === 'gameover' || this.state === 'victory') {
+      this.overlayTimer += dt;
+      return;
+    }
+
+    // Hitstop
+    if (this.hitstop > 0) { this.hitstop -= dt; if (this.hitstop < 0) this.hitstop = 0; return; }
+
+    // Player update
+    this.player.update(dt, input, this.enemies, this);
+
+    // Check player death
+    if (!this.player.alive && this.player.deathTimer > 1.5) {
+      this.state = 'gameover'; this.overlayTimer = 0; return;
+    }
+
+    // Enemies update
+    for (const e of this.enemies) {
+      e.update(dt, this.player, this);
+      if (!e.alive && e.stateTimer < 0.05) {
+        this.score += e.scoreValue;
+        // Drop pickups
+        if (Math.random() < 0.35) this.pickups.push(new Pickup(e.x + rnd(-15,15), e.y, Math.random() < 0.6 ? 'magic' : 'hp'));
+      }
+    }
+    this.enemies = this.enemies.filter(e => e.alive || e.stateTimer < 1.2);
+
+    // Pickups
+    for (const p of this.pickups) p.update(dt, this.player);
+    this.pickups = this.pickups.filter(p => p.alive);
+
+    // Wave progression
+    const activeEnemies = this.enemies.filter(e => e.alive);
+    if (activeEnemies.length === 0 && this.waveIndex < this.waves.length) {
+      if (this.waveClearTimer <= 0) {
+        this.waveClearTimer = 1.0; // brief pause
+      }
+    }
+    if (this.waveClearTimer > 0) {
+      this.waveClearTimer -= dt;
+      if (this.waveClearTimer <= 0 && this.enemies.filter(e=>e.alive).length === 0) {
+        if (this.waveIndex < this.waves.length) {
+          this.spawnEnemy(this.waves[this.waveIndex]);
+          this.waveIndex++;
+        }
+      }
+    }
+
+    // Victory: boss dead
+    if (this.boss && !this.boss.alive && this.boss.stateTimer > 1) {
+      this.state = 'victory'; this.overlayTimer = 0;
+      this.score += 500; // time bonus placeholder
+      return;
+    }
+
+    // Camera follow (locked to arena if boss fight)
+    if (this.boss && this.boss.alive) {
+      this.targetCamX = clamp(this.player.x - BASE_W / 2, this.camX - 2, this.camX + 2);
+      this.targetCamX = clamp(this.targetCamX, 850, 1100);
+    } else {
+      const desired = this.player.x - BASE_W * 0.35;
+      this.targetCamX = clamp(desired, 0, this.levelLength - BASE_W);
+    }
+    this.camX = lerp(this.camX, this.targetCamX, 0.08);
+
+    // Wave text
+    if (this.waveTextTimer > 0) this.waveTextTimer -= dt;
+
+    // Particles & floatTexts
+    for (const p of particles) p.update(dt);
+    particles.splice(0, particles.length, ...particles.filter(p => p.life > 0));
+    for (const ft of floatTexts) { ft.y += ft.vy * dt; ft.life -= dt; }
+    floatTexts.splice(0, floatTexts.length, ...floatTexts.filter(f => f.life > 0));
+
+    // Shake
+    if (shakeTimer > 0) { shakeTimer -= dt; if (shakeTimer <= 0) shakeMag = 0; }
+  }
+
+  draw() {
+    ctx.save();
+    ctx.scale(scale, scale);
+
+    // Screen shake
+    let sx = 0, sy = 0;
+    if (shakeTimer > 0) {
+      sx = (Math.random() - 0.5) * shakeMag * 2;
+      sy = (Math.random() - 0.5) * shakeMag * 2;
+      ctx.translate(sx, sy);
+    }
+
+    const camX = Math.round(this.camX);
+
+    if (this.state === 'menu') {
+      ctx.fillStyle = '#050010';
+      ctx.fillRect(0, 0, BASE_W, BASE_H);
+      drawMenu(this);
+      ctx.restore();
+      return;
+    }
+
+    drawBackground(camX);
+
+    // Draw magic boom
+    drawMagicBoom(this, camX);
+
+    // Collect all drawables, sort by depth (y position)
+    const drawables = [this.player, ...this.enemies].sort((a, b) => a.y - b.y);
+
+    // Pickups
+    for (const p of this.pickups) p.draw(camX);
+
+    // Entities
+    for (const e of drawables) e.draw(camX);
+
+    // Particles
+    ctx.save();
+    for (const p of particles) p.draw();
+    ctx.restore();
+
+    // Float texts
+    for (const ft of floatTexts) {
+      const a = ft.life / 0.8;
+      ctx.globalAlpha = a;
+      drawText(ft.text, Math.round(ft.x - camX), Math.round(ft.y), ft.size, ft.color, 'center', true);
+      ctx.globalAlpha = 1;
+    }
+
+    // HUD
+    drawHUD(this);
+    drawOverlay(this);
+
+    ctx.restore();
+  }
+}
+
+// ─── Game loop ────────────────────────────────────────────────────────────────
+const game = new Game();
+let lastTime = 0;
+function loop(ts) {
+  const dt = Math.min((ts - lastTime) / 1000, 0.05);
+  lastTime = ts;
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  game.update(dt);
+  game.draw();
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(ts => { lastTime = ts; requestAnimationFrame(loop); });
+</script>
+</body>
+</html>
