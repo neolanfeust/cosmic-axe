@@ -59,7 +59,7 @@ if('serviceWorker' in navigator){
   navigator.serviceWorker.getRegistrations().then(regs=>{
     const stale=regs.filter(r=>!r.active||!r.active.scriptURL.includes('sw.js'));
     Promise.all(stale.map(r=>r.unregister())).then(()=>{
-      navigator.serviceWorker.register('sw.js?v=1').then(reg=>{
+      navigator.serviceWorker.register('sw.js?v=2').then(reg=>{
         reg.addEventListener('updatefound',()=>{
           const nw=reg.installing;
           nw.addEventListener('statechange',()=>{
@@ -1313,13 +1313,13 @@ if(TOUCH){
     // Map to K
     const nx=dx/JOY_R,ny=dy/JOY_R;
     K.L=nx<-.25;K.R=nx>.25;
-    K.J=ny<-.35; // up = jump (space)
-    K.D=ny>.35;
+    K.U=ny<-.35; // up = depth back (ArrowUp)
+    K.D=ny>.35;  // down = depth forward (ArrowDown)
   }
   function joyRelease(){
     joyTouchId=null;
     joyKnob.style.transform='translate(-50%,-50%)';
-    K.L=false;K.R=false;K.J=false;K.D=false;
+    K.L=false;K.R=false;K.U=false;K.D=false;
   }
 
   joyZone.addEventListener('touchstart',e=>{
