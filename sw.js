@@ -1,4 +1,4 @@
-const CACHE = 'cosmic-axe-v2';
+const CACHE = 'cosmic-axe-v3';
 const ASSETS = [
   './',
   './index.html',

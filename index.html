@@ -59,7 +59,7 @@ if('serviceWorker' in navigator){
   navigator.serviceWorker.getRegistrations().then(regs=>{
     const stale=regs.filter(r=>!r.active||!r.active.scriptURL.includes('sw.js'));
     Promise.all(stale.map(r=>r.unregister())).then(()=>{
-      navigator.serviceWorker.register('sw.js?v=2').then(reg=>{
+      navigator.serviceWorker.register('sw.js?v=3').then(reg=>{
         reg.addEventListener('updatefound',()=>{
           const nw=reg.installing;
           nw.addEventListener('statechange',()=>{
@@ -81,19 +81,18 @@ const CV=document.getElementById('c'),CX=CV.getContext('2d');
 const BW=480,BH=270;
 let SC=1;
 const TOUCH=('ontouchstart' in window)||navigator.maxTouchPoints>0;
-function availH(){
-  if(window.visualViewport)return window.visualViewport.height;
-  return window.innerHeight;
-}
 function resize(){
-  const avw=window.innerWidth,avh=availH();
-  const uiH=TOUCH?0:36;
-  SC=Math.max(1,Math.min(Math.floor(avw/BW),Math.floor((avh-uiH)/BH),3));
-  CV.width=BW*SC;CV.height=BH*SC;CX.imageSmoothingEnabled=false;
+  const vw=window.visualViewport?window.visualViewport.width:window.innerWidth;
+  const vh=window.visualViewport?window.visualViewport.height:window.innerHeight;
+  // Fixed internal resolution — CSS scales the element to fill the screen
+  CV.width=BW;CV.height=BH;CX.imageSmoothingEnabled=false;
+  const s=Math.min(vw/BW,vh/BH);
+  CV.style.width=Math.round(BW*s)+'px';CV.style.height=Math.round(BH*s)+'px';
   if(TOUCH){document.getElementById('ui').style.display='none';}
 }
 resize();
 window.addEventListener('resize',resize);
+window.addEventListener('orientationchange',()=>setTimeout(resize,300));
 if(window.visualViewport)window.visualViewport.addEventListener('resize',resize);
 
 // ── Champ de jeu (profondeur) ──────────────────────────
